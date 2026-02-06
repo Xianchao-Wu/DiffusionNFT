@@ -1,5 +1,10 @@
 <h1 align="center"> DiffusionNFT:<br>Online Diffusion Reinforcement with Forward Process </h1>
 <div align="center">
+  <div>
+  <p align="center" style="font-size: larger;">
+    <strong>ICLR 2026 (Oral)</strong>
+  </p>
+  </div>
   <a href='https://arxiv.org/abs/2509.16117'><img src='https://img.shields.io/badge/Paper%20(arXiv)-2509.16117-red?logo=arxiv'></a>  &nbsp;
   <a href='https://research.nvidia.com/labs/dir/DiffusionNFT'><img src='https://img.shields.io/badge/Website-green?logo=homepage&logoColor=white'></a> &nbsp;
   <a href='https://huggingface.co/worstcoder/SD3.5M-DiffusionNFT-MultiReward'><img src='https://img.shields.io/badge/Model-blue?logo=huggingface&logoColor='></a> &nbsp;
@@ -151,6 +156,7 @@ We are pleased to see DiffusionNFT being extended to a variety of new settings a
 
 | **Time**     | **Research**                                                                                                                  | **Link**                                                           |
 |--------------|-------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------|
+| [01/2026]  | Bridging Information Asymmetry: A Hierarchical Framework for Deterministic Blind Face Restoration                    |                                                 |
 | [12/2025]  | HY-World 1.5: A Systematic Framework for Interactive World Modeling with Real-Time Latency and Geometric Consistency | https://github.com/Tencent-Hunyuan/HY-WorldPlay |
 | [12/2025]  | MotionEdit: Benchmarking and Learning Motion-Centric Image Editing                                                   | https://github.com/elainew728/motion-edit/      |
 | [11/2025]  | MammothModa2: A Unified AR-Diffusion Framework for Multimodal Understanding and Generation                           | https://github.com/bytedance/mammothmoda        |
