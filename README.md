@@ -156,6 +156,9 @@ We are pleased to see DiffusionNFT being extended to a variety of new settings a
 
 | **Time**     | **Research**                                                                                                                  | **Link**                                                           |
 |--------------|-------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------|
+| [02/2026]  | Flow-Factory                                                                                                         | https://github.com/X-GenGroup/Flow-Factory      |
+| [02/2026]  | AEGPO: Adaptive Entropy-Guided Policy Optimization for Diffusion Models                                              |                                                 |
+| [02/2026]  | DreamHome-Pano: Design-Aware and Conflict-Free Panoramic Interior Generation                                         |                                                 |
 | [01/2026]  | Bridging Information Asymmetry: A Hierarchical Framework for Deterministic Blind Face Restoration                    |                                                 |
 | [12/2025]  | HY-World 1.5: A Systematic Framework for Interactive World Modeling with Real-Time Latency and Geometric Consistency | https://github.com/Tencent-Hunyuan/HY-WorldPlay |
 | [12/2025]  | MotionEdit: Benchmarking and Learning Motion-Centric Image Editing                                                   | https://github.com/elainew728/motion-edit/      |
