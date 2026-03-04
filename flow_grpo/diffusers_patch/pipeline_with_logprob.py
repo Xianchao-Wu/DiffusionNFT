@@ -53,8 +53,8 @@ def pipeline_with_logprob(
 ):
     height = height or self.default_sample_size * self.vae_scale_factor
     width = width or self.default_sample_size * self.vae_scale_factor
-
-    assert model_type in ["sd3", "flux"]
+    #import ipdb; ipdb.set_trace()
+    assert model_type in ["sd3", "flux"] # NOTE 'sd3' stable diffusion 3
     flux = model_type == "flux"
     # 1. Check inputs. Raise error if not correct
     if not flux:
@@ -90,8 +90,8 @@ def pipeline_with_logprob(
             max_sequence_length=max_sequence_length,
         )
 
-    self._guidance_scale = guidance_scale
-    self._joint_attention_kwargs = joint_attention_kwargs
+    self._guidance_scale = guidance_scale # 1.0
+    self._joint_attention_kwargs = joint_attention_kwargs # None
     self._current_timestep = None
     self._interrupt = False
 
@@ -129,7 +129,7 @@ def pipeline_with_logprob(
             max_sequence_length=max_sequence_length,
             lora_scale=lora_scale,
         )
-        if self.do_classifier_free_guidance:
+        if self.do_classifier_free_guidance: # False
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
     else:
@@ -150,9 +150,9 @@ def pipeline_with_logprob(
 
     # 4. Prepare latent variables
     if not flux:
-        num_channels_latents = self.transformer.config.in_channels
+        num_channels_latents = self.transformer.config.in_channels # 16
         latents = self.prepare_latents(
-            batch_size * num_images_per_prompt,
+            batch_size * num_images_per_prompt, # 9 * 1
             num_channels_latents,
             height,
             width,
@@ -160,7 +160,7 @@ def pipeline_with_logprob(
             device,
             generator,
             latents,
-        )
+        ) # random noise, latents.shape=[9, 16, 64, 64]
     else:
         num_channels_latents = self.transformer.config.in_channels // 4
         latents, latent_image_ids = self.prepare_latents(
@@ -203,22 +203,22 @@ def pipeline_with_logprob(
             mu=mu,
         )
         self._num_timesteps = len(timesteps)
-
+    #import ipdb;ipdb.set_trace()
     sigmas = self.scheduler.sigmas.float()
 
     def v_pred_fn(z, sigma):
         if not flux:
             latent_model_input = torch.cat([z] * 2) if self.do_classifier_free_guidance else z
             # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-            timesteps = torch.full([latent_model_input.shape[0]], sigma * 1000, device=z.device, dtype=torch.long)
-            noise_pred = self.transformer(
-                hidden_states=latent_model_input,
-                timestep=timesteps,
-                encoder_hidden_states=prompt_embeds,
-                pooled_projections=pooled_prompt_embeds,
-                joint_attention_kwargs=self.joint_attention_kwargs,
+            timesteps = torch.full([latent_model_input.shape[0]], sigma * 1000, device=z.device, dtype=torch.long) # NOTE 1*1000 -> 1000 for sigma, why?
+            noise_pred = self.transformer( # NOTE one step call flow matching model, predict t-1's volecity field vector
+                hidden_states=latent_model_input, # torch.Size([16, 16, 64, 64]) 
+                timestep=timesteps, # shape=[16], all 1000.0
+                encoder_hidden_states=prompt_embeds, # [16, 205, 4096]
+                pooled_projections=pooled_prompt_embeds, # [16, 2048]
+                joint_attention_kwargs=self.joint_attention_kwargs, # None
                 return_dict=False,
-            )[0]
+            )[0] # noise_pred.shape=[16, 16, 64, 64]
             noise_pred = noise_pred.to(prompt_embeds.dtype)
             # perform guidance
             if self.do_classifier_free_guidance:
@@ -249,7 +249,7 @@ def pipeline_with_logprob(
     # 6. Prepare image embeddings
     all_latents = [latents]
     all_log_probs = []
-
+    #import ipdb; ipdb.set_trace()
     # 7. Denoising loop
     latents, all_latents, all_log_probs = run_sampling(v_pred_fn, latents, sigmas, solver, deterministic, noise_level)
 
@@ -264,6 +264,6 @@ def pipeline_with_logprob(
     self.maybe_free_model_hooks()
 
     if not flux:
-        return image, all_latents, all_log_probs
+        return image, all_latents, all_log_probs # grpo: [9, 16, 64, 64], 11, 10
     else:
-        return image, all_latents, latent_image_ids, text_ids, all_log_probs
+        return image, all_latents, latent_image_ids, text_ids, all_log_probs # eval: image.shape=[16, 3, 512, 512]; len(all_latents)=41; len(all_log_probs)=40

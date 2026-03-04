@@ -14,12 +14,12 @@ tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 def run_sampling(
     v_pred_fn,
     z,
-    sigma_schedule,
+    sigma_schedule, # sigmas, a list with 40/10 values from 1.0 down to 0.0
     solver="flow",
     determistic=False,
     eta=0.7,
 ):
-    assert solver in ["flow", "dance", "ddim", "dpm1", "dpm2"]
+    assert solver in ["flow", "dance", "ddim", "dpm1", "dpm2"] # 'flow' in eval; and 'dpm2' in training/grpo
     dtype = z.dtype
     all_latents = [z]
     all_log_probs = []
@@ -32,17 +32,17 @@ def run_sampling(
         desc="Sampling Progress",
         disable=not dist.is_initialized() or dist.get_rank() != 0,
     ):
-        sigma = sigma_schedule[i]
+        sigma = sigma_schedule[i] # i=0, sigma=1.0
 
-        pred = v_pred_fn(z.to(dtype), sigma)
+        pred = v_pred_fn(z.to(dtype), sigma) # one step calling v_theta for one timestep prediction of v(x_t, t)
         if solver == "flow":
-            z, pred_original, log_prob = flow_grpo_step(
-                model_output=pred.float(),
-                latents=z.float(),
-                eta=eta if not determistic else 0,
-                sigmas=sigma_schedule,
-                index=i,
-                prev_sample=None,
+            z, pred_original, log_prob = flow_grpo_step( # NOTE here
+                model_output=pred.float(), # v(x_t, t)
+                latents=z.float(), # x_t
+                eta=eta if not determistic else 0, # noise level, 0.7
+                sigmas=sigma_schedule, # 41 sigma values, shape=[41] value is from 1.0 to 0.9913 to 0.0
+                index=i, # i=0, e.g., from 0 to 40
+                prev_sample=None, # no x_t-1 yet, generate on-the-fly
             )
         elif solver == "dance":
             z, pred_original, log_prob = dance_grpo_step(
@@ -52,16 +52,16 @@ def run_sampling(
             z, pred_original, log_prob = ddim_step(
                 pred.float(), z.float(), eta if not determistic else 0, sigmas=sigma_schedule, index=i, prev_sample=None
             )
-        elif "dpm" in solver:
+        elif "dpm" in solver: # NOTE here for grpo
             assert determistic
             z, pred_original, log_prob = dpm_step(
-                order,
-                model_output=pred.float(),
-                sample=z.float(),
+                order, # 2
+                model_output=pred.float(), # v(x_t, t) output from flow matching model
+                sample=z.float(), # x_t
                 step_index=i,
-                timesteps=sigma_schedule[:-1],
+                timesteps=sigma_schedule[:-1], # 11 values to 10 values, remove the last 0.0 now
                 sigmas=sigma_schedule,
-                dpm_state=dpm_state,
+                dpm_state=dpm_state, # DPMState(order=2, model_outputs=[None, None])
             )
         else:
             assert False
@@ -73,8 +73,8 @@ def run_sampling(
     # all_latents = torch.stack(all_latents, dim=1)  # (batch_size, num_steps + 1, 4, 64, 64)
     # all_log_probs = torch.stack(all_log_probs, dim=1)  # (batch_size, num_steps, 1)
     return latents, all_latents, all_log_probs
-
-
+    # eval: latents.shape=[16, 16, 64, 64]; len(all_latents)=41; len(all_log_probs)=40
+    # grpo: latents.shape=[9, 16, 64, 64]; len(all_latents)=11, len(all_log_probs)=10
 def flow_grpo_step(
     model_output: torch.Tensor,
     latents: torch.Tensor,
@@ -88,7 +88,7 @@ def flow_grpo_step(
     sigma = sigmas[index].to(device)
     sigma_prev = sigmas[index + 1].to(device)
     sigma_max = sigmas[1].item()
-    dt = sigma_prev - sigma  # neg dt
+    dt = sigma_prev - sigma  # neg dt NOTE dt's value is negative
 
     pred_original_sample = latents - sigma * model_output
 
@@ -106,7 +106,7 @@ def flow_grpo_step(
     )
 
     if prev_sample is None:
-        variance_noise = randn_tensor(model_output.shape, generator=generator, device=device, dtype=model_output.dtype)
+        variance_noise = randn_tensor(model_output.shape, generator=generator, device=device, dtype=model_output.dtype) # new random noise
         prev_sample = prev_sample_mean + std_dev_t * torch.sqrt(-1 * dt) * variance_noise
 
     log_prob = (
@@ -119,7 +119,7 @@ def flow_grpo_step(
     log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
     return prev_sample, pred_original_sample, log_prob
-
+    # prev_sample.shape=[16, 16, 64, 64], pred_original_samples.shape=[16, 16, 64, 64], log_prob.shape=[16] 
 
 def dance_grpo_step(
     model_output: torch.Tensor,

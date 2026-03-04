@@ -290,6 +290,8 @@ def eval_fn(
             gathered_value = gather_tensor_to_all(rewards_tensor, world_size)
             all_rewards[key].append(gathered_value.numpy())
 
+        break # NOTE TODO for debug only
+
     if is_main_process(rank):
         final_rewards = {key: np.concatenate(value_list) for key, value_list in all_rewards.items()}
 
@@ -355,11 +357,14 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
-
+    import ipdb; ipdb.set_trace()
     # --- Distributed Setup ---
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    local_rank = int(os.environ["LOCAL_RANK"])
+    #rank = int(os.environ["RANK"])
+    #world_size = int(os.environ["WORLD_SIZE"])
+    #local_rank = int(os.environ["LOCAL_RANK"])
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
     setup_distributed(rank, local_rank, world_size)
     device = torch.device(f"cuda:{local_rank}")
@@ -388,9 +393,12 @@ def main(_):
 
     enable_amp = mixed_precision_dtype is not None
     scaler = GradScaler(enabled=enable_amp)
-
+    import ipdb; ipdb.set_trace()
     # --- Load pipeline and models ---
-    pipeline = StableDiffusion3Pipeline.from_pretrained(config.pretrained.model)
+    pipeline = StableDiffusion3Pipeline.from_pretrained(
+        #config.pretrained.model
+        '/workspace/asr/flow_grpo/ckpts/models--stabilityai--stable-diffusion-3.5-medium/snapshots/b940f670f0eda2d07fbb75229e779da1ad11eb80',
+    )
     pipeline.vae.requires_grad_(False)
     pipeline.text_encoder.requires_grad_(False)
     pipeline.text_encoder_2.requires_grad_(False)
@@ -416,7 +424,7 @@ def main(_):
 
     transformer = pipeline.transformer.to(device)
 
-    if config.use_lora:
+    if config.use_lora: # True
         target_modules = [
             "attn.add_k_proj",
             "attn.add_q_proj",
@@ -463,19 +471,19 @@ def main(_):
     if config.prompt_fn == "general_ocr":
         train_dataset = TextPromptDataset(config.dataset, "train")
         test_dataset = TextPromptDataset(config.dataset, "test")
-    elif config.prompt_fn == "geneval":
-        train_dataset = GenevalPromptDataset(config.dataset, "train")
-        test_dataset = GenevalPromptDataset(config.dataset, "test")
+    elif config.prompt_fn == "geneval": # NOTE here
+        train_dataset = GenevalPromptDataset(config.dataset, "train") # /workspace/asr/DiffusionNFT/dataset/geneval; with 50k samples
+        test_dataset = GenevalPromptDataset(config.dataset, "test") # with 2211 samples
     else:
         raise NotImplementedError("Prompt function not supported with dataset")
 
     train_sampler = DistributedKRepeatSampler(
         dataset=train_dataset,
-        batch_size=config.sample.train_batch_size,  # This is per-GPU batch size
-        k=config.sample.num_image_per_prompt,
-        num_replicas=world_size,
-        rank=rank,
-        seed=config.seed,
+        batch_size=config.sample.train_batch_size,  # This is per-GPU batch size, 9
+        k=9, #config.sample.num_image_per_prompt, # 24 TODO
+        num_replicas=world_size, # 1
+        rank=rank, # 0
+        seed=config.seed, # 42
     )
     train_dataloader = DataLoader(
         train_dataset, batch_sampler=train_sampler, num_workers=0, collate_fn=train_dataset.collate_fn, pin_memory=True
@@ -492,7 +500,7 @@ def main(_):
         num_workers=0,
         pin_memory=True,
     )
-
+    import ipdb; ipdb.set_trace()
     # --- Prompt Embeddings ---
     neg_prompt_embed, neg_pooled_prompt_embed = compute_text_embeddings(
         [""], text_encoders, tokenizers, max_sequence_length=128, device=device
@@ -510,9 +518,9 @@ def main(_):
         assert False
 
     executor = futures.ThreadPoolExecutor(max_workers=8)  # Async reward computation
-
+    import ipdb; ipdb.set_trace()
     # Train!
-    samples_per_epoch = config.sample.train_batch_size * world_size * config.sample.num_batches_per_epoch
+    samples_per_epoch = config.sample.train_batch_size * world_size * config.sample.num_batches_per_epoch # 9 * 1 * 16 = 144
     total_train_batch_size = config.train.batch_size * world_size * config.train.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
@@ -593,11 +601,12 @@ def main(_):
             disable=not is_main_process(rank),
             position=0,
         ):
+            #import ipdb; ipdb.set_trace()
             transformer_ddp.module.set_adapter("default")
             if hasattr(train_sampler, "set_epoch") and isinstance(train_sampler, DistributedKRepeatSampler):
                 train_sampler.set_epoch(epoch * config.sample.num_batches_per_epoch + i)
 
-            prompts, prompt_metadata = next(train_iter)
+            prompts, prompt_metadata = next(train_iter) # len(prompts)=9, all the same, 重复了9次而已
 
             prompt_embeds, pooled_prompt_embeds = compute_text_embeddings(
                 prompts, text_encoders, tokenizers, max_sequence_length=128, device=device
@@ -608,8 +617,8 @@ def main(_):
 
             if i == 0 and epoch % config.eval_freq == 0 and not config.debug:
                 eval_fn(
-                    pipeline,
-                    test_dataloader,
+                    pipeline, # <class 'diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3.StableDiffusion3Pipeline'>
+                    test_dataloader, # NOTE 这是每次搞了之后，都重新评估一下pipeline这个模型的质量
                     text_encoders,
                     tokenizers,
                     config,
@@ -621,7 +630,7 @@ def main(_):
                     executor,
                     mixed_precision_dtype,
                     ema,
-                    transformer_trainable_parameters,
+                    transformer_trainable_parameters, # 18,776,064=18.7M 可训练参数
                 )
 
             if i == 0 and epoch % config.save_freq == 0 and is_main_process(rank) and not config.debug:
@@ -637,6 +646,7 @@ def main(_):
                     scaler,
                 )
 
+            #import ipdb; ipdb.set_trace()
             transformer_ddp.module.set_adapter("old")
             with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                 with torch.no_grad():
@@ -646,14 +656,14 @@ def main(_):
                         pooled_prompt_embeds=pooled_prompt_embeds,
                         negative_prompt_embeds=sample_neg_prompt_embeds[: len(prompts)],
                         negative_pooled_prompt_embeds=sample_neg_pooled_prompt_embeds[: len(prompts)],
-                        num_inference_steps=config.sample.num_steps,
-                        guidance_scale=config.sample.guidance_scale,
+                        num_inference_steps=config.sample.num_steps, # 10
+                        guidance_scale=config.sample.guidance_scale, # 1.0
                         output_type="pt",
                         height=config.resolution,
                         width=config.resolution,
-                        noise_level=config.sample.noise_level,
-                        deterministic=config.sample.deterministic,
-                        solver=config.sample.solver,
+                        noise_level=config.sample.noise_level, # 0.7
+                        deterministic=config.sample.deterministic, # True
+                        solver=config.sample.solver, # 'dpm2'
                         model_type="sd3",
                     )
             transformer_ddp.module.set_adapter("default")
@@ -675,7 +685,7 @@ def main(_):
                     "rewards_future": rewards_future,  # Store future
                 }
             )
-
+        import ipdb; ipdb.set_trace()
         for sample_item in tqdm(
             samples_data_list, desc="Waiting for rewards", disable=not is_main_process(rank), position=0
         ):
@@ -740,14 +750,14 @@ def main(_):
                 },
                 step=global_step,
             )
-
-        if config.per_prompt_stat_tracking:
+        import ipdb; ipdb.set_trace()
+        if config.per_prompt_stat_tracking: # True
             prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
             prompts_all_decoded = pipeline.tokenizer.batch_decode(
                 prompt_ids_all.cpu().numpy(), skip_special_tokens=True
             )
             # Stat tracker update expects numpy arrays for rewards
-            advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"])
+            advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"]) # [144, 9]
 
             if is_main_process(rank):
                 group_size, trained_prompt_num = stat_tracker.get_stats()
@@ -804,6 +814,7 @@ def main(_):
         gradient_update_times = 0
 
         for inner_epoch in range(config.train.num_inner_epochs):
+            import ipdb; ipdb.set_trace()
             perm = torch.randperm(total_batch_size_filtered, device=device)
             shuffled_filtered_samples = {k: v[perm] for k, v in filtered_samples.items()}
 
@@ -834,6 +845,7 @@ def main(_):
                 position=0,
                 disable=not is_main_process(rank),
             ):
+                import ipdb; ipdb.set_trace()
                 current_micro_batch_size = len(train_sample_batch["prompt_embeds"])
 
                 if config.sample.guidance_scale > 1.0:
@@ -858,6 +870,7 @@ def main(_):
                     leave=False,
                     disable=not is_main_process(rank),
                 ):
+                    import ipdb; ipdb.set_trace()
                     assert j_idx == j_timestep_orig_idx
                     x0 = train_sample_batch["latents_clean"]
 
