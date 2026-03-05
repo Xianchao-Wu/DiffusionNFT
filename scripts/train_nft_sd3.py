@@ -357,7 +357,7 @@ def save_ckpt(
 
 def main(_):
     config = FLAGS.config
-    import ipdb; ipdb.set_trace()
+    #import ipdb; ipdb.set_trace()
     # --- Distributed Setup ---
     #rank = int(os.environ["RANK"])
     #world_size = int(os.environ["WORLD_SIZE"])
@@ -393,7 +393,7 @@ def main(_):
 
     enable_amp = mixed_precision_dtype is not None
     scaler = GradScaler(enabled=enable_amp)
-    import ipdb; ipdb.set_trace()
+    #import ipdb; ipdb.set_trace()
     # --- Load pipeline and models ---
     pipeline = StableDiffusion3Pipeline.from_pretrained(
         #config.pretrained.model
@@ -500,7 +500,7 @@ def main(_):
         num_workers=0,
         pin_memory=True,
     )
-    import ipdb; ipdb.set_trace()
+    #import ipdb; ipdb.set_trace()
     # --- Prompt Embeddings ---
     neg_prompt_embed, neg_pooled_prompt_embed = compute_text_embeddings(
         [""], text_encoders, tokenizers, max_sequence_length=128, device=device
@@ -518,7 +518,7 @@ def main(_):
         assert False
 
     executor = futures.ThreadPoolExecutor(max_workers=8)  # Async reward computation
-    import ipdb; ipdb.set_trace()
+    #import ipdb; ipdb.set_trace()
     # Train!
     samples_per_epoch = config.sample.train_batch_size * world_size * config.sample.num_batches_per_epoch # 9 * 1 * 16 = 144
     total_train_batch_size = config.train.batch_size * world_size * config.train.gradient_accumulation_steps
@@ -685,7 +685,7 @@ def main(_):
                     "rewards_future": rewards_future,  # Store future
                 }
             )
-        import ipdb; ipdb.set_trace()
+        #import ipdb; ipdb.set_trace()
         for sample_item in tqdm(
             samples_data_list, desc="Waiting for rewards", disable=not is_main_process(rank), position=0
         ):
@@ -750,14 +750,14 @@ def main(_):
                 },
                 step=global_step,
             )
-        import ipdb; ipdb.set_trace()
+        #import ipdb; ipdb.set_trace()
         if config.per_prompt_stat_tracking: # True
             prompt_ids_all = gather_tensor_to_all(collated_samples["prompt_ids"], world_size)
             prompts_all_decoded = pipeline.tokenizer.batch_decode(
                 prompt_ids_all.cpu().numpy(), skip_special_tokens=True
             )
             # Stat tracker update expects numpy arrays for rewards
-            advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"]) # [144, 9]
+            advantages = stat_tracker.update(prompts_all_decoded, gathered_rewards_dict["avg"]) # [144, 9] # NOTE this is using grpo algorithm to compute advantages=(r-mean)/std
 
             if is_main_process(rank):
                 group_size, trained_prompt_num = stat_tracker.get_stats()
@@ -820,19 +820,19 @@ def main(_):
 
             perms_time = torch.stack(
                 [torch.randperm(num_timesteps_filtered, device=device) for _ in range(total_batch_size_filtered)]
-            )
+            ) # [144, 10], e.g., tensor([[0, 2, 9,  ..., 7, 4, 3], -> tensor([0, 2, 9, 8, 1, 6, 5, 7, 4, 3], device='cuda:0')
             for key in ["timesteps", "next_timesteps"]:
                 shuffled_filtered_samples[key] = shuffled_filtered_samples[key][
                     torch.arange(total_batch_size_filtered, device=device)[:, None], perms_time
-                ]
+                ] # since both 'timesteps' and 'next_timesteps' use the same 'perms_time', so the relative order keeps the same, that is shuffled_filtered_samples['timesteps'] > shuffled_filtered_samples['next_timesteps']
 
-            training_batch_size = total_batch_size_filtered // num_batches
+            training_batch_size = total_batch_size_filtered // num_batches # 144//16=9
 
             samples_batched_list = []
-            for k_batch in range(num_batches):
+            for k_batch in range(num_batches): # 16
                 batch_dict = {}
-                start = k_batch * training_batch_size
-                end = (k_batch + 1) * training_batch_size
+                start = k_batch * training_batch_size # 0
+                end = (k_batch + 1) * training_batch_size # 9
                 for key, val_tensor in shuffled_filtered_samples.items():
                     batch_dict[key] = val_tensor[start:end]
                 samples_batched_list.append(batch_dict)
@@ -846,7 +846,7 @@ def main(_):
                 disable=not is_main_process(rank),
             ):
                 import ipdb; ipdb.set_trace()
-                current_micro_batch_size = len(train_sample_batch["prompt_embeds"])
+                current_micro_batch_size = len(train_sample_batch["prompt_embeds"]) # 9
 
                 if config.sample.guidance_scale > 1.0:
                     embeds = torch.cat(
@@ -859,12 +859,12 @@ def main(_):
                         ]
                     )
                 else:
-                    embeds = train_sample_batch["prompt_embeds"]
-                    pooled_embeds = train_sample_batch["pooled_prompt_embeds"]
+                    embeds = train_sample_batch["prompt_embeds"] # [9, 205, 4096]
+                    pooled_embeds = train_sample_batch["pooled_prompt_embeds"] # [9, 2048]
 
                 # Loop over timesteps for this micro-batch
                 for j_idx, j_timestep_orig_idx in tqdm(
-                    enumerate(range(num_train_timesteps)),
+                    enumerate(range(num_train_timesteps)), # 9
                     desc="Timestep",
                     position=1,
                     leave=False,
@@ -872,18 +872,18 @@ def main(_):
                 ):
                     import ipdb; ipdb.set_trace()
                     assert j_idx == j_timestep_orig_idx
-                    x0 = train_sample_batch["latents_clean"]
+                    x0 = train_sample_batch["latents_clean"] # [9, 16, 64, 64]
 
-                    t = train_sample_batch["timesteps"][:, j_idx] / 1000.0
+                    t = train_sample_batch["timesteps"][:, j_idx] / 1000.0 # NOTE /1000 again to a range of [0, 1] now; before in calling transformer (FM), used 1000 * t; t=tensor([1.0000, 0.2780, 0.7073, 0.7073, 0.7073, 0.6022, 0.9133, 0.2780, 0.2780],
 
-                    t_expanded = t.view(-1, *([1] * (len(x0.shape) - 1)))
+                    t_expanded = t.view(-1, *([1] * (len(x0.shape) - 1))) # shape from [9] to [9, 1, 1, 1]
 
                     noise = torch.randn_like(x0.float())
 
-                    xt = (1 - t_expanded) * x0 + t_expanded * noise
+                    xt = (1 - t_expanded) * x0 + t_expanded * noise # NOTE t这里有随机了!!! 每个序列的可能不一样了 t_expanded.shape=[9, 1, 1, 1], x0.shape=[9, 16, 64, 64], noise.shape=[9, 16, 64, 64]
 
                     with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
-                        transformer_ddp.module.set_adapter("old")
+                        transformer_ddp.module.set_adapter("old") # NOTE why? what is 'old' for?
                         with torch.no_grad():
                             # prediction v
                             old_prediction = transformer_ddp(
@@ -893,7 +893,7 @@ def main(_):
                                 pooled_projections=pooled_embeds,
                                 return_dict=False,
                             )[0].detach()
-                        transformer_ddp.module.set_adapter("default")
+                        transformer_ddp.module.set_adapter("default") # NOTE why?
 
                         # prediction v
                         forward_prediction = transformer_ddp(
@@ -906,7 +906,7 @@ def main(_):
 
                         with torch.no_grad():  # Reference model part
                             # For LoRA, disable adapter.
-                            if config.use_lora:
+                            if config.use_lora: # True
                                 with transformer_ddp.module.disable_adapter():
                                     ref_forward_prediction = transformer_ddp(
                                         hidden_states=xt,
@@ -925,7 +925,7 @@ def main(_):
                         -config.train.adv_clip_max,
                         config.train.adv_clip_max,
                     )
-                    if hasattr(config.train, "adv_mode"):
+                    if hasattr(config.train, "adv_mode"): # NOTE config.train.adv_mode='all'
                         if config.train.adv_mode == "positive_only":
                             advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
                         elif config.train.adv_mode == "negative_only":
@@ -938,27 +938,27 @@ def main(_):
                             advantages_clip = torch.sign(advantages_clip)
 
                     # normalize advantage
-                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5
-                    r = torch.clamp(normalized_advantages_clip, 0, 1)
+                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5 # TODO why? which part in the paper? https://arxiv.org/pdf/2509.16117 page 6 in r(x_0, c)
+                    r = torch.clamp(normalized_advantages_clip, 0, 1) # reward
                     loss_terms["x0_norm"] = torch.mean(x0**2).detach()
                     loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
-                    loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach()
+                    loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach() # deviate = pian li = away from
                     loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
-                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach()
+                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach() # NOTE v^+_theta right below Equation 5 in page 5 of the paper, 'implicit positive policy' line-10 in algorithm 1
                     implicit_negative_prediction = (
                         1.0 + config.beta
-                    ) * old_prediction.detach() - config.beta * forward_prediction
+                    ) * old_prediction.detach() - config.beta * forward_prediction # NOTE v^-_theta 'implicit negative policy' in the paper, line-11 in algorithm 1
 
                     # adaptive weighting
-                    x0_prediction = xt - t_expanded * positive_prediction
+                    x0_prediction = xt - t_expanded * positive_prediction # NOTE page 6's x_theta = x_t - t * v_theta, where x_theta = x0_prediction
                     with torch.no_grad():
                         weight_factor = (
                             torch.abs(x0_prediction.double() - x0.double())
                             .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                             .clip(min=0.00001)
-                        )
-                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(dim=tuple(range(1, x0.ndim)))
-                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction
+                        ) # weight_factor.shape=[9, 1, 1, 1] each sample with one weight factor
+                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(dim=tuple(range(1, x0.ndim))) # shape=[9]
+                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction # NOTE alike line-953
                     with torch.no_grad():
                         negative_weight_factor = (
                             torch.abs(negative_x0_prediction.double() - x0.double())
@@ -967,10 +967,10 @@ def main(_):
                         )
                     negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
-                    )
+                    ) # NOTE same format alike line 960
 
-                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta
-                    policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean()
+                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta # equation 5 ? why added 'config.beta=0.1'???
+                    policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean() # config.train.adv_clip_max=5
 
                     loss = policy_loss
                     loss_terms["policy_loss"] = policy_loss.detach()
@@ -978,9 +978,9 @@ def main(_):
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
-                    )
+                    )# ref_forward_prediction is the mean? kl_div_loss.shape=[9]
 
-                    loss += config.train.beta * torch.mean(kl_div_loss)
+                    loss += config.train.beta * torch.mean(kl_div_loss) # config.train.beta=0.0001
                     kl_div_loss = torch.mean(kl_div_loss)
                     loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
                     loss_terms["kl_div"] = torch.mean(
@@ -993,7 +993,7 @@ def main(_):
                     loss_terms["total_loss"] = loss.detach()
 
                     # Scale loss for gradient accumulation and DDP (DDP averages grads, so no need to divide by world_size here)
-                    scaled_loss = loss / effective_grad_accum_steps
+                    scaled_loss = loss / effective_grad_accum_steps # effective_grad_accum_steps=72
                     if mixed_precision_dtype == torch.float16:
                         scaler.scale(scaled_loss).backward()  # one accumulation
                     else:
