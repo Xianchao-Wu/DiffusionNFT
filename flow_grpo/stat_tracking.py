@@ -39,7 +39,7 @@ class PerPromptStatTracker:
     def clear(self):
         self.stats = {}
 
-    def get_mean_of_top_rewards(self, top_percentage):
+    def get_mean_of_top_rewards(self, top_percentage): # 只取前top_percentage的，排序是从小到大的；例如top_percentage=100，就是所有数据；top_percentage=5，就是前5%最高取值的数据
         if not self.stats:
             return 0.0
 
@@ -56,11 +56,11 @@ class PerPromptStatTracker:
                 continue
 
             if top_percentage == 100:
-                per_prompt_top_means.append(np.mean(rewards))
+                per_prompt_top_means.append(np.mean(rewards)) # rewards.shape=(9, 9)
                 continue
 
             lower_bound_percentile = 100 - top_percentage
-            threshold = np.percentile(rewards, lower_bound_percentile)
+            threshold = np.percentile(rewards, lower_bound_percentile) # 百分位的含义，95百分位=超过了95%的取值，也就是说，这个取值在5%。那么，top_percentage=100的时候，包括所有数据；top_percentage=10的时候，只需要前10%的数据，即对应了90百分位。
 
             top_rewards = rewards[rewards >= threshold]
 

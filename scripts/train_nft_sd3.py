@@ -438,11 +438,11 @@ def main(_):
         transformer_lora_config = LoraConfig(
             r=32, lora_alpha=64, init_lora_weights="gaussian", target_modules=target_modules
         )
-        if config.train.lora_path:
+        if config.train.lora_path: # None
             transformer = PeftModel.from_pretrained(transformer, config.train.lora_path)
             transformer.set_adapter("default")
         else:
-            transformer = get_peft_model(transformer, transformer_lora_config)
+            transformer = get_peft_model(transformer, transformer_lora_config) # NOTE here, add 'old' and 'default' adapter types, each adapter type is with 18,776,064=18.7M parameters.
         transformer.add_adapter("old", transformer_lora_config)
         transformer.set_adapter("default")
     transformer_ddp = DDP(transformer, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
@@ -587,7 +587,7 @@ def main(_):
         tgt_param.data.copy_(src_param.detach().data)
         assert src_param is not tgt_param
 
-    for epoch in range(first_epoch, config.num_epochs):
+    for epoch in range(first_epoch, config.num_epochs): # first_epoch=0, config.num_epochs=100000
         if hasattr(train_sampler, "set_epoch"):
             train_sampler.set_epoch(epoch)
 
@@ -596,7 +596,7 @@ def main(_):
         samples_data_list = []
 
         for i in tqdm(
-            range(config.sample.num_batches_per_epoch),
+            range(config.sample.num_batches_per_epoch), # 16
             desc=f"Epoch {epoch}: sampling",
             disable=not is_main_process(rank),
             position=0,
@@ -606,7 +606,7 @@ def main(_):
             if hasattr(train_sampler, "set_epoch") and isinstance(train_sampler, DistributedKRepeatSampler):
                 train_sampler.set_epoch(epoch * config.sample.num_batches_per_epoch + i)
 
-            prompts, prompt_metadata = next(train_iter) # len(prompts)=9, all the same, 重复了9次而已
+            prompts, prompt_metadata = next(train_iter) # len(prompts)=9, 'prompt' in 'prompts' is all the same, 重复了9次而已, e.g., prompts[0]='A vibrant digital banner on a website header, prominently displaying the text "Limited Time Offer" in bold, eye-catching colors, set against a dynamic background with subtle gradients and modern design elements.'
 
             prompt_embeds, pooled_prompt_embeds = compute_text_embeddings(
                 prompts, text_encoders, tokenizers, max_sequence_length=128, device=device
@@ -617,8 +617,8 @@ def main(_):
 
             if i == 0 and epoch % config.eval_freq == 0 and not config.debug:
                 eval_fn(
-                    pipeline, # <class 'diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3.StableDiffusion3Pipeline'>
-                    test_dataloader, # NOTE 这是每次搞了之后，都重新评估一下pipeline这个模型的质量
+                    pipeline, # <class 'diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3.StableDiffusion3Pipeline'> 'default' lora adapter NOTE
+                    test_dataloader, # 这是每次搞了policy update之后，都重新评估一下pipeline这个模型的质量
                     text_encoders,
                     tokenizers,
                     config,
@@ -626,17 +626,17 @@ def main(_):
                     rank,
                     world_size,
                     global_step,
-                    eval_reward_fn,
-                    executor,
-                    mixed_precision_dtype,
-                    ema,
-                    transformer_trainable_parameters, # 18,776,064=18.7M 可训练参数
+                    eval_reward_fn, # <function multi_score.<locals>._fn at 0x7fe4093b2a70>
+                    executor, # <concurrent.futures.thread.ThreadPoolExecutor object at 0x7fe9ebe60580>
+                    mixed_precision_dtype, # torch.float16
+                    ema, # <flow_grpo.ema.EMAModuleWrapper object at 0x7fe409225c30>
+                    transformer_trainable_parameters, # 18,776,064=18.7M 可训练参数; a list with 382 tensors
                 )
 
             if i == 0 and epoch % config.save_freq == 0 and is_main_process(rank) and not config.debug:
                 save_ckpt(
                     config.save_dir,
-                    transformer_ddp,
+                    transformer_ddp, # both 'old' lora adapter and 'default' lora adapter are saved to hard disk
                     global_step,
                     rank,
                     ema,
@@ -651,41 +651,42 @@ def main(_):
             with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
                 with torch.no_grad():
                     images, latents, _ = pipeline_with_logprob(
-                        pipeline,
-                        prompt_embeds=prompt_embeds,
-                        pooled_prompt_embeds=pooled_prompt_embeds,
-                        negative_prompt_embeds=sample_neg_prompt_embeds[: len(prompts)],
-                        negative_pooled_prompt_embeds=sample_neg_pooled_prompt_embeds[: len(prompts)],
+                        pipeline, # <class 'diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3.StableDiffusion3Pipeline'> NOTE 'old' lora adapter
+                        prompt_embeds=prompt_embeds, # [9, 205, 4096]
+                        pooled_prompt_embeds=pooled_prompt_embeds, # [9, 2048]
+                        negative_prompt_embeds=sample_neg_prompt_embeds[: len(prompts)], # [9, 205, 4096], prune by len(prompts) -> no change
+                        negative_pooled_prompt_embeds=sample_neg_pooled_prompt_embeds[: len(prompts)], # [9, 2048], prune by len(prompts) -> no change
                         num_inference_steps=config.sample.num_steps, # 10
                         guidance_scale=config.sample.guidance_scale, # 1.0
                         output_type="pt",
-                        height=config.resolution,
-                        width=config.resolution,
+                        height=config.resolution, # 512
+                        width=config.resolution, # 512
                         noise_level=config.sample.noise_level, # 0.7
                         deterministic=config.sample.deterministic, # True
                         solver=config.sample.solver, # 'dpm2'
                         model_type="sd3",
-                    )
+                    ) # latents=a list with 11 tensors, latents[0].shape=[9, 16, 64, 64] NOTE 这是使用任意solver，来通过多次迭代，从x1 -> x0 =images的方法。这个方法负责的是：prompt -> flow-matching model + solver with 10 iterations -> image; images.shape=[9, 3, 512, 512], 
             transformer_ddp.module.set_adapter("default")
+            #import ipdb; ipdb.set_trace()
 
-            latents = torch.stack(latents, dim=1)
+            latents = torch.stack(latents, dim=1) # after stack, latents.shape=[9, 11, 16, 64, 64]
             timesteps = pipeline.scheduler.timesteps.repeat(len(prompts), 1).to(device)
 
             rewards_future = executor.submit(reward_fn, images, prompts, prompt_metadata, only_strict=True)
-            time.sleep(0)
-
+            time.sleep(0) # 让当前线程“主动让出 CPU”，把执行权交给操作系统调度器，然后立刻重新进入可调度状态。
+            # submit任务 -> 让出cpu -> worker线程启动reward_fn -> 主线程继续
             samples_data_list.append(
                 {
-                    "prompt_ids": prompt_ids,
-                    "prompt_embeds": prompt_embeds,
-                    "pooled_prompt_embeds": pooled_prompt_embeds,
-                    "timesteps": timesteps,
-                    "next_timesteps": torch.concatenate([timesteps[:, 1:], torch.zeros_like(timesteps[:, :1])], dim=1),
-                    "latents_clean": latents[:, -1],
+                    "prompt_ids": prompt_ids, # [9, 256]
+                    "prompt_embeds": prompt_embeds, # [9, 205, 4096]
+                    "pooled_prompt_embeds": pooled_prompt_embeds, # [9, 2048]
+                    "timesteps": timesteps, # [9, 10], e.g., tensor([[1000.0000,  960.1293,  913.3490,  857.6923,  790.3683,  707.2785,           602.1506,  464.8760,  278.0488,    8.9286],
+                    "next_timesteps": torch.concatenate([timesteps[:, 1:], torch.zeros_like(timesteps[:, :1])], dim=1), # [9, 9] + [9, 1] -> [9, 10], e.g., tensor([[960.1293, 913.3490, 857.6923, 790.3683, 707.2785, 602.1506, 464.8760,          278.0488,   8.9286,   0.0000],
+                    "latents_clean": latents[:, -1], # NOTE textual prompt -> pi^old -> x0=latents[:, -1] 取的是trajectory中的最后一个，也就是我们想要的结果
                     "rewards_future": rewards_future,  # Store future
                 }
             )
-        #import ipdb; ipdb.set_trace()
+        import ipdb; ipdb.set_trace()
         for sample_item in tqdm(
             samples_data_list, desc="Waiting for rewards", disable=not is_main_process(rank), position=0
         ):
@@ -808,15 +809,15 @@ def main(_):
         transformer_ddp.train()  # Sets DDP model and its submodules to train mode.
 
         # Total number of backward passes before an optimizer step
-        effective_grad_accum_steps = config.train.gradient_accumulation_steps * num_train_timesteps
+        effective_grad_accum_steps = config.train.gradient_accumulation_steps * num_train_timesteps # 8*9=72
 
         current_accumulated_steps = 0  # Counter for backward passes
         gradient_update_times = 0
 
-        for inner_epoch in range(config.train.num_inner_epochs):
+        for inner_epoch in range(config.train.num_inner_epochs): # 1
             import ipdb; ipdb.set_trace()
-            perm = torch.randperm(total_batch_size_filtered, device=device)
-            shuffled_filtered_samples = {k: v[perm] for k, v in filtered_samples.items()}
+            perm = torch.randperm(total_batch_size_filtered, device=device) # 144, 生成0-143之间的一个全排列
+            shuffled_filtered_samples = {k: v[perm] for k, v in filtered_samples.items()} # dict_keys(['prompt_embeds', 'pooled_prompt_embeds', 'timesteps', 'next_timesteps', 'latents_clean', 'advantages'])=filtered_samples.keys()
 
             perms_time = torch.stack(
                 [torch.randperm(num_timesteps_filtered, device=device) for _ in range(total_batch_size_filtered)]
@@ -836,7 +837,7 @@ def main(_):
                 for key, val_tensor in shuffled_filtered_samples.items():
                     batch_dict[key] = val_tensor[start:end]
                 samples_batched_list.append(batch_dict)
-
+            # NOTE 上面这个是把[144, 205, 4096], 按照batch-size=16，来切分成9个batches
             info_accumulated = defaultdict(list)  # For accumulating stats over one grad acc cycle
 
             for i, train_sample_batch in tqdm(
@@ -848,7 +849,7 @@ def main(_):
                 import ipdb; ipdb.set_trace()
                 current_micro_batch_size = len(train_sample_batch["prompt_embeds"]) # 9
 
-                if config.sample.guidance_scale > 1.0:
+                if config.sample.guidance_scale > 1.0: # = 1.0 NOTE meaningful only when >1.0, noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond), when self.guidance_scale=1.0, then noise_pred = noise_pred_uncond + noise_pred_text - noise_pred_uncond = noise_pred_text; 此外，如果guidance_scale < 1.0，则cfg占据了上风，没有意义了.
                     embeds = torch.cat(
                         [train_neg_prompt_embeds[:current_micro_batch_size], train_sample_batch["prompt_embeds"]]
                     )
@@ -862,7 +863,7 @@ def main(_):
                     embeds = train_sample_batch["prompt_embeds"] # [9, 205, 4096]
                     pooled_embeds = train_sample_batch["pooled_prompt_embeds"] # [9, 2048]
 
-                # Loop over timesteps for this micro-batch
+                # Loop over timesteps (NOTE all T timesteps) for this micro-batch
                 for j_idx, j_timestep_orig_idx in tqdm(
                     enumerate(range(num_train_timesteps)), # 9
                     desc="Timestep",
@@ -872,39 +873,39 @@ def main(_):
                 ):
                     import ipdb; ipdb.set_trace()
                     assert j_idx == j_timestep_orig_idx
-                    x0 = train_sample_batch["latents_clean"] # [9, 16, 64, 64]
+                    x0 = train_sample_batch["latents_clean"] ### 1 x0: [9, 16, 64, 64], prompt -> pi^old -> trajectory[-1] = predicted x0 image related tensor
 
-                    t = train_sample_batch["timesteps"][:, j_idx] / 1000.0 # NOTE /1000 again to a range of [0, 1] now; before in calling transformer (FM), used 1000 * t; t=tensor([1.0000, 0.2780, 0.7073, 0.7073, 0.7073, 0.6022, 0.9133, 0.2780, 0.2780],
+                    t = train_sample_batch["timesteps"][:, j_idx] / 1000.0 # NOTE /1000 again to a range of [0, 1] now; before in calling transformer (FM), used 1000 * t; t=tensor([1.0000, 0.2780, 0.7073, 0.7073, 0.7073, 0.6022, 0.9133, 0.2780, 0.2780], pick one timestep for one sequence/sample (totally 9 samples)
 
-                    t_expanded = t.view(-1, *([1] * (len(x0.shape) - 1))) # shape from [9] to [9, 1, 1, 1]
+                    t_expanded = t.view(-1, *([1] * (len(x0.shape) - 1))) ### 2 t: shape from [9] to [9, 1, 1, 1]
 
-                    noise = torch.randn_like(x0.float())
+                    noise = torch.randn_like(x0.float()) ### 3 epsilon
 
-                    xt = (1 - t_expanded) * x0 + t_expanded * noise # NOTE t这里有随机了!!! 每个序列的可能不一样了 t_expanded.shape=[9, 1, 1, 1], x0.shape=[9, 16, 64, 64], noise.shape=[9, 16, 64, 64]
+                    xt = (1 - t_expanded) * x0 + t_expanded * noise ### 4 xt, NOTE t这里有随机了!!! 每个序列的可能不一样了 t_expanded.shape=[9, 1, 1, 1], x0.shape=[9, 16, 64, 64], noise.shape=[9, 16, 64, 64]
 
                     with torch_autocast(enabled=enable_amp, dtype=mixed_precision_dtype):
-                        transformer_ddp.module.set_adapter("old") # NOTE why? what is 'old' for?
+                        transformer_ddp.module.set_adapter("old") # NOTE why? what is 'old' for? -> pi^old in the paper
                         with torch.no_grad():
-                            # prediction v
+                            # prediction v^old 无梯度
                             old_prediction = transformer_ddp(
                                 hidden_states=xt,
-                                timestep=train_sample_batch["timesteps"][:, j_idx],
-                                encoder_hidden_states=embeds,
-                                pooled_projections=pooled_embeds,
+                                timestep=train_sample_batch["timesteps"][:, j_idx], # j_idx 是batch中一个sample的索引号
+                                encoder_hidden_states=embeds, # [9, 205, 4096]
+                                pooled_projections=pooled_embeds, # [9, 2048]
                                 return_dict=False,
-                            )[0].detach()
-                        transformer_ddp.module.set_adapter("default") # NOTE why?
+                            )[0].detach() ### 5 v_pred_old, with 'old' adapter
+                        transformer_ddp.module.set_adapter("default") 
 
-                        # prediction v
+                        # prediction v 有梯度
                         forward_prediction = transformer_ddp(
                             hidden_states=xt,
                             timestep=train_sample_batch["timesteps"][:, j_idx],
                             encoder_hidden_states=embeds,
                             pooled_projections=pooled_embeds,
                             return_dict=False,
-                        )[0]
+                        )[0] ### 6 v_pred_default=v_theta, velocity field vector with lora adapters - the policy on focus for current updating, with 'default' lora adapters? -> trainable!!!
 
-                        with torch.no_grad():  # Reference model part
+                        with torch.no_grad():  # Reference model part 无梯度
                             # For LoRA, disable adapter.
                             if config.use_lora: # True
                                 with transformer_ddp.module.disable_adapter():
@@ -914,17 +915,17 @@ def main(_):
                                         encoder_hidden_states=embeds,
                                         pooled_projections=pooled_embeds,
                                         return_dict=False,
-                                    )[0]
+                                    )[0] ### 7 v_ref, real ref since disabled lora adapters!
                                 transformer_ddp.module.set_adapter("default")
                             else:  # Full model - this requires a frozen copy of the model
                                 assert False
                     loss_terms = {}
                     # Policy Gradient Loss
                     advantages_clip = torch.clamp(
-                        train_sample_batch["advantages"][:, j_idx],
-                        -config.train.adv_clip_max,
-                        config.train.adv_clip_max,
-                    )
+                        train_sample_batch["advantages"][:, j_idx], # NOTE TODO j_idx is alike timestep, the bad problem is that, advantage is timestep insensitive... e.g., tensor([-0.5167, -0.5167, -0.5167, -0.5167, -0.5167, -0.5167, -0.5167, -0.5167, -0.5167], device='cuda:0', dtype=torch.float64), 9 timesteps
+                        -config.train.adv_clip_max, # -5
+                        config.train.adv_clip_max, # 5
+                    ) ### 8 advantages_clip
                     if hasattr(config.train, "adv_mode"): # NOTE config.train.adv_mode='all'
                         if config.train.adv_mode == "positive_only":
                             advantages_clip = torch.clamp(advantages_clip, 0, config.train.adv_clip_max)
@@ -938,64 +939,64 @@ def main(_):
                             advantages_clip = torch.sign(advantages_clip)
 
                     # normalize advantage
-                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5 # TODO why? which part in the paper? https://arxiv.org/pdf/2509.16117 page 6 in r(x_0, c)
-                    r = torch.clamp(normalized_advantages_clip, 0, 1) # reward
-                    loss_terms["x0_norm"] = torch.mean(x0**2).detach()
-                    loss_terms["x0_norm_max"] = torch.max(x0**2).detach()
-                    loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach() # deviate = pian li = away from
-                    loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach()
-                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach() # NOTE v^+_theta right below Equation 5 in page 5 of the paper, 'implicit positive policy' line-10 in algorithm 1
+                    normalized_advantages_clip = (advantages_clip / config.train.adv_clip_max) / 2.0 + 0.5 ### 9 normalized_advantages_clip TODO why? which part in the paper? https://arxiv.org/pdf/2509.16117 page 6 in r(x_0, c), config.train.adv_clip_max=5
+                    r = torch.clamp(normalized_advantages_clip, 0, 1) ### 10 r for reward
+                    loss_terms["x0_norm"] = torch.mean(x0**2).detach() ### 11
+                    loss_terms["x0_norm_max"] = torch.max(x0**2).detach() ### 12
+                    loss_terms["old_deviate"] = torch.mean((forward_prediction - old_prediction) ** 2).detach() ### 13 deviate = pian li = away from
+                    loss_terms["old_deviate_max"] = torch.max((forward_prediction - old_prediction) ** 2).detach() ### 14
+                    positive_prediction = config.beta * forward_prediction + (1 - config.beta) * old_prediction.detach() ### 15 NOTE v^+_theta right below Equation 5 in page 5 of the paper, 'implicit positive policy' line-10 in algorithm 1; TODO 因为old_prediction是torch.no_grad()下计算出来的，所以其没有被加入计算图，所以也不需要detach()! 待定
                     implicit_negative_prediction = (
                         1.0 + config.beta
-                    ) * old_prediction.detach() - config.beta * forward_prediction # NOTE v^-_theta 'implicit negative policy' in the paper, line-11 in algorithm 1
+                    ) * old_prediction.detach() - config.beta * forward_prediction ### 16 NOTE v^-_theta 'implicit negative policy' in the paper, line-11 in algorithm 1
 
                     # adaptive weighting
-                    x0_prediction = xt - t_expanded * positive_prediction # NOTE page 6's x_theta = x_t - t * v_theta, where x_theta = x0_prediction
+                    x0_prediction = xt - t_expanded * positive_prediction ### 17 NOTE page 6's x_theta = x_t - t * v_theta, where x_theta = x0_prediction, 预测出来的x0 = xt带噪图片 - t*速度场向量，这个v^_theta是noise - data，即从data指向noise的！所以，这里noise - v^_theta = data = x0_prediction得到的是从xt一步“去噪”之后，得到的预测出来的real data x0
                     with torch.no_grad():
                         weight_factor = (
                             torch.abs(x0_prediction.double() - x0.double())
                             .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                             .clip(min=0.00001)
-                        ) # weight_factor.shape=[9, 1, 1, 1] each sample with one weight factor
-                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(dim=tuple(range(1, x0.ndim))) # shape=[9]
-                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction # NOTE alike line-953
+                        ) ### 18 weight_factor.shape=[9, 1, 1, 1] each sample with one weight factor
+                    positive_loss = ((x0_prediction - x0) ** 2 / weight_factor).mean(dim=tuple(range(1, x0.ndim))) ### 19, shape=[9]
+                    negative_x0_prediction = xt - t_expanded * implicit_negative_prediction ### 20 NOTE alike line-953
                     with torch.no_grad():
                         negative_weight_factor = (
                             torch.abs(negative_x0_prediction.double() - x0.double())
                             .mean(dim=tuple(range(1, x0.ndim)), keepdim=True)
                             .clip(min=0.00001)
-                        )
+                        ) ### 21
                     negative_loss = ((negative_x0_prediction - x0) ** 2 / negative_weight_factor).mean(
                         dim=tuple(range(1, x0.ndim))
-                    ) # NOTE same format alike line 960
+                    ) ### 22 NOTE same format alike line 960
 
-                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta # equation 5 ? why added 'config.beta=0.1'???
-                    policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean() # config.train.adv_clip_max=5
+                    ori_policy_loss = r * positive_loss / config.beta + (1.0 - r) * negative_loss / config.beta ### 23 equation 5 ? why added 'config.beta=0.1'??? shape=[9]
+                    policy_loss = (ori_policy_loss * config.train.adv_clip_max).mean() ### 24 config.train.adv_clip_max=5
 
-                    loss = policy_loss
-                    loss_terms["policy_loss"] = policy_loss.detach()
-                    loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
+                    loss = policy_loss ### 25
+                    loss_terms["policy_loss"] = policy_loss.detach() ### 26
+                    loss_terms["unweighted_policy_loss"] = ori_policy_loss.mean().detach() ### 27
 
                     kl_div_loss = ((forward_prediction - ref_forward_prediction) ** 2).mean(
                         dim=tuple(range(1, x0.ndim))
-                    )# ref_forward_prediction is the mean? kl_div_loss.shape=[9]
+                    )### 28 ref_forward_prediction is the mean? kl_div_loss.shape=[9]
 
-                    loss += config.train.beta * torch.mean(kl_div_loss) # config.train.beta=0.0001
-                    kl_div_loss = torch.mean(kl_div_loss)
-                    loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach()
+                    loss += config.train.beta * torch.mean(kl_div_loss) ### 29 config.train.beta=0.0001
+                    kl_div_loss = torch.mean(kl_div_loss) # mean([9]) --> scalar
+                    loss_terms["kl_div_loss"] = torch.mean(kl_div_loss).detach() ### 30
                     loss_terms["kl_div"] = torch.mean(
                         ((forward_prediction - ref_forward_prediction) ** 2).mean(dim=tuple(range(1, x0.ndim)))
-                    ).detach()
+                    ).detach() ### 31
                     loss_terms["old_kl_div"] = torch.mean(
                         ((old_prediction - ref_forward_prediction) ** 2).mean(dim=tuple(range(1, x0.ndim)))
-                    ).detach()
+                    ).detach() ### 32
 
-                    loss_terms["total_loss"] = loss.detach()
+                    loss_terms["total_loss"] = loss.detach() ### 33
 
                     # Scale loss for gradient accumulation and DDP (DDP averages grads, so no need to divide by world_size here)
-                    scaled_loss = loss / effective_grad_accum_steps # effective_grad_accum_steps=72
+                    scaled_loss = loss / effective_grad_accum_steps ### 34 effective_grad_accum_steps=72
                     if mixed_precision_dtype == torch.float16:
-                        scaler.scale(scaled_loss).backward()  # one accumulation
+                        scaler.scale(scaled_loss).backward()  # one accumulation # NOTE
                     else:
                         scaled_loss.backward()
                     current_accumulated_steps += 1
