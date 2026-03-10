@@ -215,12 +215,13 @@ def eval_fn(
     executor,
     mixed_precision_dtype,
     ema,
-    transformer_trainable_parameters,
+    transformer_trainable_parameters, # theta the trainable 'default' lora adapter group
 ):
+    import ipdb; ipdb.set_trace()
     if config.train.ema and ema is not None:
-        ema.copy_ema_to(transformer_trainable_parameters, store_temp=True)
-
-    pipeline.transformer.eval()
+        ema.copy_ema_to(transformer_trainable_parameters, store_temp=True) # NOTE  copy ema's cached parameters to current 'transformer_trainable_parameters' TODO 1. transformer_trainable_parameters -> ema's temp cache = ema's temp_stored_parameters; 2. ema's stored ema.ema_parameters --> copy to -> transformer_trainable_parameters/theta
+    ### 相当于是在说，这里的evaluate，实际上用的是来自ema里面的cache的参数集合了，也就是：ema.ema_parameters!!! NOTE NOTE NOTE
+    pipeline.transformer.eval() # TODO 如何验证这里的pipeline里面使用的参数，是来自ema.ema_parameters-> theta的那个theta呢？？？
 
     neg_prompt_embed, neg_pooled_prompt_embed = compute_text_embeddings(
         [""], text_encoders, tokenizers, max_sequence_length=128, device=device
@@ -324,8 +325,9 @@ def eval_fn(
                 step=global_step,
             )
 
+    import ipdb; ipdb.set_trace()
     if config.train.ema and ema is not None:
-        ema.copy_temp_to(transformer_trainable_parameters)
+        ema.copy_temp_to(transformer_trainable_parameters) # ema's temp_stored_parameters -> theta, recover pipeline
 
     if world_size > 1:
         dist.barrier()
@@ -341,8 +343,9 @@ def save_ckpt(
 
         model_to_save = transformer_ddp.module
 
+        import ipdb; ipdb.set_trace()
         if config.train.ema and ema is not None:
-            ema.copy_ema_to(transformer_trainable_parameters, store_temp=True)
+            ema.copy_ema_to(transformer_trainable_parameters, store_temp=True) # NOTE 所以说，实际save到hard disk的是ema.ema_parameters，不是当前的theta=transformer_trainable_parameters
 
         model_to_save.save_pretrained(save_root_lora)  # For LoRA/PEFT models
 
@@ -350,8 +353,9 @@ def save_ckpt(
         if scaler is not None:
             torch.save(scaler.state_dict(), os.path.join(save_root, "scaler.pt"))
 
+        import ipdb; ipdb.set_trace()
         if config.train.ema and ema is not None:
-            ema.copy_temp_to(transformer_trainable_parameters)
+            ema.copy_temp_to(transformer_trainable_parameters) # ema's temp_stored_parameters -> theta
         logger.info(f"Saved checkpoint to {save_root}")
 
 
@@ -460,7 +464,7 @@ def main(_):
     optimizer_cls = torch.optim.AdamW
 
     optimizer = optimizer_cls(
-        transformer_trainable_parameters,  # Use params from original model for optimizer
+        transformer_trainable_parameters,  # Use params from original model for optimizer, 'default' lora adapter group
         lr=config.train.learning_rate,
         betas=(config.train.adam_beta1, config.train.adam_beta2),
         weight_decay=config.train.adam_weight_decay,
@@ -570,8 +574,9 @@ def main(_):
             )
             global_step = 0
 
+    import ipdb; ipdb.set_trace()
     ema = None
-    if config.train.ema:
+    if config.train.ema: # True
         ema = EMAModuleWrapper(transformer_trainable_parameters, decay=0.9, update_step_interval=1, device=device)
 
     num_train_timesteps = int(config.sample.num_steps * config.train.timestep_fraction)
@@ -584,7 +589,7 @@ def main(_):
     for src_param, tgt_param in zip(
         transformer_trainable_parameters, old_transformer_trainable_parameters, strict=True
     ):
-        tgt_param.data.copy_(src_param.detach().data)
+        tgt_param.data.copy_(src_param.detach().data) # src_param --> tgt_param i.e., theta --> theta^old, update theta^old by theta NOTE
         assert src_param is not tgt_param
 
     for epoch in range(first_epoch, config.num_epochs): # first_epoch=0, config.num_epochs=100000
@@ -631,7 +636,7 @@ def main(_):
                     mixed_precision_dtype, # torch.float16
                     ema, # <flow_grpo.ema.EMAModuleWrapper object at 0x7fe409225c30>
                     transformer_trainable_parameters, # 18,776,064=18.7M 可训练参数; a list with 382 tensors
-                )
+                ) # NOTE 这里只是调用了eval_fn一次，没有其他的地方的调用了
 
             if i == 0 and epoch % config.save_freq == 0 and is_main_process(rank) and not config.debug:
                 save_ckpt(
@@ -841,12 +846,12 @@ def main(_):
             info_accumulated = defaultdict(list)  # For accumulating stats over one grad acc cycle
 
             for i, train_sample_batch in tqdm(
-                list(enumerate(samples_batched_list)),
+                list(enumerate(samples_batched_list)), # NOTE with 16 batches
                 desc=f"Epoch {epoch}.{inner_epoch}: training",
                 position=0,
                 disable=not is_main_process(rank),
             ):
-                import ipdb; ipdb.set_trace()
+                #import ipdb; ipdb.set_trace()
                 current_micro_batch_size = len(train_sample_batch["prompt_embeds"]) # 9
 
                 if config.sample.guidance_scale > 1.0: # = 1.0 NOTE meaningful only when >1.0, noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond), when self.guidance_scale=1.0, then noise_pred = noise_pred_uncond + noise_pred_text - noise_pred_uncond = noise_pred_text; 此外，如果guidance_scale < 1.0，则cfg占据了上风，没有意义了.
@@ -871,7 +876,7 @@ def main(_):
                     leave=False,
                     disable=not is_main_process(rank),
                 ):
-                    import ipdb; ipdb.set_trace()
+                    #import ipdb; ipdb.set_trace()
                     assert j_idx == j_timestep_orig_idx
                     x0 = train_sample_batch["latents_clean"] ### 1 x0: [9, 16, 64, 64], prompt -> pi^old -> trajectory[-1] = predicted x0 image related tensor
 
@@ -992,7 +997,7 @@ def main(_):
                     ).detach() ### 32
 
                     loss_terms["total_loss"] = loss.detach() ### 33
-
+                    #import ipdb; ipdb.set_trace()
                     # Scale loss for gradient accumulation and DDP (DDP averages grads, so no need to divide by world_size here)
                     scaled_loss = loss / effective_grad_accum_steps ### 34 effective_grad_accum_steps=72
                     if mixed_precision_dtype == torch.float16:
@@ -1034,13 +1039,14 @@ def main(_):
 
                         global_step += 1  # gradient step
                         info_accumulated = defaultdict(list)  # Reset for next accumulation cycle
-
+                import ipdb; ipdb.set_trace()
                 if (
-                    config.train.ema
-                    and ema is not None
-                    and (current_accumulated_steps % effective_grad_accum_steps == 0)
+                    config.train.ema # True
+                    and ema is not None # True
+                    and (current_accumulated_steps % effective_grad_accum_steps == 0) # 9 % 72 = 9
                 ):
-                    ema.step(transformer_trainable_parameters, global_step)
+                    import ipdb; ipdb.set_trace() # 8 batches * 9 timesteps = 72; NOTE totally 16 batches, so, two ema updates 
+                    ema.step(transformer_trainable_parameters, global_step) # global_step=1
 
         if world_size > 1:
             dist.barrier()
